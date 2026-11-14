@@ -1,0 +1,9 @@
+{
+  "name": "light-shop-telegram-bot",
+  "version": "3.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node bot.js", "dev": "node --watch bot.js" },
+  "dependencies": { "dotenv": "^16.4.5", "grammy": "^1.30.0" },
+  "engines": { "node": ">=20" }
+}
