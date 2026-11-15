@@ -1,5 +1,5 @@
 /**
- * Light Shop — подписка · WebApp · Stars→коины · ключи
+ * Light Shop — ключ без ссылки · Mega в product_files · WebApp
  */
 import { Bot, InlineKeyboard } from "grammy";
 import http from "node:http";
@@ -15,13 +15,11 @@ const ADMIN_IDS = (process.env.ADMIN_IDS || "")
   .split(",").map((s) => s.trim()).filter(Boolean).map(Number);
 
 const CHANNEL = process.env.CHANNEL_USERNAME || "LightShopOFC";
-const WEBAPP_URL = process.env.WEBAPP_URL || "https://YOUR-NEOCITIES.neocities.org/";
+const WEBAPP_URL = process.env.WEBAPP_URL || "https://example.neocities.org/";
+const SITE = process.env.SITE_URL || "https://lightshop.neocities.org/";
 const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
 const SUPABASE_KEY = process.env.SUPABASE_KEY || "";
 const ADMIN_PASS = process.env.ADMIN_PASS || "";
-
-/** id товара → { url, name }  задаётся /setfile */
-const fileMap = new Map();
 
 const PRODUCTS = [
   { id: 1, name: "Ктм модель", stars: 199 },
@@ -33,6 +31,17 @@ const PRODUCTS = [
   { id: 7, name: "Питбайки мод 1.12.2", stars: 120 },
   { id: 8, name: "Питбайк стант", stars: 350 },
 ];
+
+const MEGA = {
+  1: ["https://mega.nz/file/YnIj3R4R#GVxBXoKdYh-pi-6d53eYSHH7tntc6JR5jd9LTZsMkro", "ktm-modeli.zip"],
+  2: ["https://mega.nz/file/sjwSlJ7Y#TnmnTilKz0skTUtlmttWqT2KUrIkPmmUUFjAuo0o1LE", "yareevo-s3.zip"],
+  3: ["https://mega.nz/file/QqpURRaL#2GHCuHoAAAB0I0QOfI1wYQAAAAAAAAAAfIBgHAGNcNU", "yareevo-s6.zip"],
+  4: ["https://mega.nz/file/AnYjFLzT#1-ObvqBk15Y-pi9G7UhFr6EcVafXEqIWw1EkyURBssk", "yareevo-s8.zip"],
+  5: ["https://mega.nz/file/cjAziT6a#ImtOXpC7STrYo1dStk1AC5R7mQkegJKRCma1f53zf1Y", "kfg-yareevo.rar"],
+  6: ["https://mega.nz/file/MiBTzYhA#Tws3bUt20KzNKnwvZhXWxmNZnu96eW4KjvmwMaFl0D8", "aquapark.rar"],
+  7: ["https://mega.nz/file/x7JhzLKA#txE6PBqrDj7IC5NhxEnNU4FKg7Z3uc23qZ0QjsN_Syo", "pitbike-mod.zip"],
+  8: ["https://mega.nz/file/5zAXADaC#mPRs5n8AAAA8u5Ep_Fu3DgAAAAAAAAAAxJ6MO4Fbt7o", "pitbike-stunt.zip"],
+};
 
 function productById(id) {
   return PRODUCTS.find((p) => p.id === Number(id));
@@ -67,23 +76,52 @@ function randKey() {
   return `LS-${a}-${b}`;
 }
 
-async function createKey(product) {
-  const meta = fileMap.get(product.id) || {};
-  const fileUrl = meta.url || process.env[`FILE_URL_${product.id}`];
-  if (!fileUrl) return { ok: false, error: "Нет файла. Админ: /setfile " + product.id + " URL" };
-  if (!ADMIN_PASS) return { ok: false, error: "Нет ADMIN_PASS" };
+/** Создать одноразовый ключ с mega-ссылкой внутри БД (пользователю ссылку не шлём) */
+async function createKeyOnly(product) {
+  const mega = MEGA[product.id];
+  let fileUrl = mega?.[0];
+  let fileName = mega?.[1] || null;
+
+  // обновить product_files
+  if (fileUrl) {
+    await sbRpc("tg_set_product_file", {
+      p_product_id: product.id,
+      p_url: fileUrl,
+      p_name: fileName,
+    });
+  }
+
+  if (!fileUrl && ADMIN_PASS) {
+    // fallback — уже в product_files через SQL
+  }
+
   const code = randKey();
-  const data = await sbRpc("admin_create_key", {
-    p_pass: ADMIN_PASS,
-    p_code: code,
-    p_title: product.name,
-    p_file_url: fileUrl,
-    p_file_name: meta.name || null,
-    p_note: "Stars shop",
-    p_max_uses: 1,
-  });
-  if (!data || !data.ok) return { ok: false, error: data?.error || "key fail" };
-  return { ok: true, code: data.code || code };
+  if (ADMIN_PASS && fileUrl) {
+    const data = await sbRpc("admin_create_key", {
+      p_pass: ADMIN_PASS,
+      p_code: code,
+      p_title: product.name,
+      p_file_url: fileUrl,
+      p_file_name: fileName,
+      p_note: "bot",
+      p_max_uses: 1,
+    });
+    if (data?.ok) return { ok: true, code: data.code || code };
+  }
+
+  // без admin_create_key — покупка через tg_buy_product из WebApp
+  return { ok: true, code, note: "webapp" };
+}
+
+function keyMessage(product, code) {
+  return (
+    `Спасибо за покупку 🛍️\n\n` +
+    `Товар: <b>${product.name}</b>\n\n` +
+    `Ключ:\n<code>${code}</code>\n\n` +
+    `Введи ключ на сайте:\n${SITE}\n` +
+    `или во вкладке Main в меню.\n\n` +
+    `‼️ Ключ <b>одноразовый</b>. Ссылку на файл бот не присылает.`
+  );
 }
 
 async function isSubscribed(userId) {
@@ -114,12 +152,11 @@ const bot = new Bot(TOKEN);
 bot.command("start", async (ctx) => {
   const payload = (ctx.match || "").trim();
 
-  // topup_100
   if (payload.startsWith("topup_")) {
     const stars = Math.floor(Number(payload.slice(6)));
     if (!stars || stars < 1) return ctx.reply("Сумма неверная");
     if (!(await isSubscribed(ctx.from.id))) {
-      return ctx.reply(`Сначала подписка: https://t.me/${CHANNEL}`);
+      return ctx.reply(`Подписка: https://t.me/${CHANNEL}`);
     }
     const inv = `top_${ctx.from.id}_${stars}_${Date.now()}`;
     pendingTopup.set(inv, { userId: ctx.from.id, stars });
@@ -133,40 +170,30 @@ bot.command("start", async (ctx) => {
         { provider_token: "", max_tip_amount: 0 }
       );
     } catch (e) {
-      await ctx.reply("Счёт не создан: " + (e.description || e.message));
+      await ctx.reply("Счёт: " + (e.description || e.message));
     }
     return;
   }
 
-  // buy_2_350 — выдача ключа после списания коинов в WebApp
+  // buy_ID — только если нужно добить ключ из бота (WebApp уже создаёт)
   if (payload.startsWith("buy_")) {
-    const parts = payload.split("_");
-    const pid = Number(parts[1]);
+    const pid = Number(payload.split("_")[1]);
     const p = productById(pid);
     if (!p) return ctx.reply("Товар не найден");
-    const key = await createKey(p);
-    if (!key.ok) {
-      return ctx.reply(`Оплата/списание уже на балансе, но ключ: ${key.error}\nНапиши админу.`);
-    }
-    await ctx.reply(
-      `Спасибо за покупку 🛍️\nВаш ключ ниже 🔑\n\n` +
-        `Ключ:\n<code>${key.code}</code>\n\n` +
-        `Товар: <b>${p.name}</b>\n` +
-        `Ввод: сайт / вкладка Main в меню\n\n` +
-        `‼️ Ключ 1 раз. Проверь интернет перед скачиванием.\nFAQ — на сайте.`,
-      {
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard().webApp("🌐 Открыть меню", WEBAPP_URL),
-      }
-    );
+    const key = await createKeyOnly(p);
+    if (!key.ok) return ctx.reply("Не удалось создать ключ");
+    await ctx.reply(keyMessage(p, key.code), {
+      parse_mode: "HTML",
+      reply_markup: menuKb(),
+      link_preview_options: { is_disabled: true },
+    });
     return;
   }
 
-  // обычный start — подписка
   const ok = await isSubscribed(ctx.from.id);
   if (!ok) {
     return ctx.reply(
-      `🔒 Подпишись на канал, чтобы открыть меню:\nhttps://t.me/${CHANNEL}`,
+      `🔒 Подпишись на канал:\nhttps://t.me/${CHANNEL}`,
       {
         reply_markup: new InlineKeyboard()
           .url("Подписаться", `https://t.me/${CHANNEL}`)
@@ -175,7 +202,7 @@ bot.command("start", async (ctx) => {
       }
     );
   }
-  await ctx.reply(`✦ <b>Light Shop</b>\n\nМеню с балансом, каталогом и ключами:`, {
+  await ctx.reply(`✦ <b>Light Shop</b>\n\nМеню магазина:`, {
     parse_mode: "HTML",
     reply_markup: menuKb(),
   });
@@ -186,7 +213,7 @@ bot.callbackQuery("check_sub", async (ctx) => {
   if (!(await isSubscribed(ctx.from.id))) {
     return ctx.reply("Подписка не видна. Подпишись и нажми снова.");
   }
-  await ctx.reply("✅ Готово. Открывай меню:", { reply_markup: menuKb() });
+  await ctx.reply("✅ Открывай меню:", { reply_markup: menuKb() });
 });
 
 bot.on("pre_checkout_query", async (ctx) => {
@@ -201,50 +228,53 @@ bot.on("message:successful_payment", async (ctx) => {
   const order = pendingTopup.get(pay.invoice_payload);
   pendingTopup.delete(pay.invoice_payload);
   const stars = order?.stars || pay.total_amount;
-  const uid = ctx.from.id;
   const r = await sbRpc("tg_add_coins", {
-    p_id: uid,
+    p_id: ctx.from.id,
     p_amount: stars,
     p_kind: "topup",
-    p_meta: { stars, payload: pay.invoice_payload },
+    p_meta: { stars },
   });
-  if (!r || !r.ok) {
-    await ctx.reply(`Оплата ${stars}★ прошла, но баланс: ${r?.error || "ошибка"}. Напиши админу.`);
+  if (!r?.ok) {
+    await ctx.reply(`Оплата ${stars}★ прошла, баланс: ${r?.error || "ошибка"}`);
     return;
   }
-  await ctx.reply(
-    `✅ +${stars} коинов\nБаланс: <b>${r.coins}</b>`,
-    { parse_mode: "HTML", reply_markup: menuKb() }
-  );
-  for (const a of ADMIN_IDS) {
-    try {
-      await bot.api.sendMessage(a, `💰 topup ${stars}★ from ${uid}`);
-    } catch (_) {}
-  }
+  await ctx.reply(`✅ +${stars} коинов\nБаланс: <b>${r.coins}</b>`, {
+    parse_mode: "HTML",
+    reply_markup: menuKb(),
+  });
 });
 
 bot.command("setfile", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
   const parts = (ctx.message.text || "").split(/\s+/);
-  if (parts.length < 3) return ctx.reply("/setfile ID URL [name.zip]");
+  if (parts.length < 3) return ctx.reply("/setfile ID URL [name]");
   const id = Number(parts[1]);
   if (!productById(id)) return ctx.reply("Нет товара");
-  fileMap.set(id, { url: parts[2], name: parts[3] || null });
   const r = await sbRpc("tg_set_product_file", {
     p_product_id: id,
     p_url: parts[2],
     p_name: parts[3] || null,
   });
-  await ctx.reply(
-    r && r.ok
-      ? `Файл #${id} сохранён в базе. Покупки в WebApp выдадут ключ.`
-      : `Локально ок, база: ${r?.error || "ошибка"}`
-  );
+  await ctx.reply(r?.ok ? `Файл #${id} обновлён` : `Ошибка: ${r?.error}`);
+});
+
+bot.command("seedmega", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  let n = 0;
+  for (const [id, [url, name]] of Object.entries(MEGA)) {
+    const r = await sbRpc("tg_set_product_file", {
+      p_product_id: Number(id),
+      p_url: url,
+      p_name: name,
+    });
+    if (r?.ok) n++;
+  }
+  await ctx.reply(`Mega-ссылки записаны: ${n}/8`);
 });
 
 bot.command("admin", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
-  await ctx.reply("Админ: /setfile · WebApp админ-вкладка · Variables FILE_URL_N");
+  await ctx.reply("Админ: /setfile · /seedmega · WebApp админка");
 });
 
 bot.catch((e) => console.error(e));
