@@ -230,7 +230,16 @@ bot.command("setfile", async (ctx) => {
   const id = Number(parts[1]);
   if (!productById(id)) return ctx.reply("Нет товара");
   fileMap.set(id, { url: parts[2], name: parts[3] || null });
-  await ctx.reply(`Файл для #${id} записан (до рестарта). Для постоянства: FILE_URL_${id} в Variables`);
+  const r = await sbRpc("tg_set_product_file", {
+    p_product_id: id,
+    p_url: parts[2],
+    p_name: parts[3] || null,
+  });
+  await ctx.reply(
+    r && r.ok
+      ? `Файл #${id} сохранён в базе. Покупки в WebApp выдадут ключ.`
+      : `Локально ок, база: ${r?.error || "ошибка"}`
+  );
 });
 
 bot.command("admin", async (ctx) => {
